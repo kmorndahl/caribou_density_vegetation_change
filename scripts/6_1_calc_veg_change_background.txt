@@ -1,0 +1,131 @@
+// =====================================================================
+
+// CODE DESCRIPTION
+
+// This script calculates vegetation change (weighted area) across across background areas
+
+// CODE AUTHOR: Kathleen Orndahl
+// CONTACT: kathleen.orndahl@nau.edu
+
+// Link to GEE snapshot: https://code.earthengine.google.com/93466cfb07c59397b7b700eacd285608
+
+// =====================================================================
+
+// ====================
+// 1. SET UP ==========
+// ====================
+ 
+ // 1.1 LOAD DATA ==========
+
+var porcupine = ee.FeatureCollection("users/kmo265/AOIs/porcupine_total");
+var fortymile_ssf = ee.FeatureCollection("users/kmo265/Caribou/ssf_outline");
+var wah = ee.FeatureCollection("users/kmo265/Caribou/WAH");
+var ak_yt_nwt = ee.FeatureCollection("users/kmo265/AOIs/AK_YT_NWT");
+ 
+// 1.2 SET PARAMETERS ==========
+
+var start_year = 1992;
+var end_year = 2020;
+
+var pft_list = ['allDecShrub', 'allEvShrub', 'graminoid', 'allForb', 'tmlichenLight2', 'alnshr', 'betshr', 'salshr'];
+print('PFTs', pft_list);
+
+// =========================
+// 2. CREATE AOIs ==========
+// =========================
+
+var ak_yt = ee.Feature(ak_yt_nwt.filter(ee.Filter.neq('NAME', 'Northwest Territories')).union().first());
+
+var control_regions = ee.FeatureCollection([ak_yt.set('name', 'ak_yt'), ee.Feature(wah.first()).set('name', 'wah'), ee.Feature(porcupine.first()).set('name', 'porcupine'), ee.Feature(fortymile_ssf.first()).set('name', 'fortymile_ssf')]);
+print('control_regions', control_regions);
+Map.addLayer(control_regions, null, 'Control regions');
+
+// ====================================
+// 3. CREATE VEGETATION DATA ==========
+// ====================================
+
+// Get annual PFT cover maps
+// Separate image for each PFT/year combination
+var pft_ic = ee.ImageCollection('projects/foreststructure/ABoVE/BiomeShift/Alaska_Yukon_PFT_202207_Filled').select('cover');
+var pft_ic_size = pft_ic.size();
+
+// Filter to year range
+var pft_start = pft_ic.filter(ee.Filter.calendarRange(start_year, start_year, 'year'));
+var pft_end = pft_ic.filter(ee.Filter.calendarRange(end_year, end_year, 'year'));
+pft_ic = pft_start.merge(pft_end);
+
+// Filter to PFTs of choice
+pft_ic = pft_ic.filter(ee.Filter.inList('response', pft_list));
+
+// Rename bands
+pft_ic = ee.ImageCollection(pft_ic.toList(pft_ic_size).map(function(img){ // Convert to list to allow changing system:index
+  
+  img = ee.Image(img);
+  var id = ee.String(img.id());
+  id = id.replace('20210911_pft_noRatePreds_', '')
+         .replace('v20220325_alaska_yukon_', '')
+         .replace('Light2', '')
+         .replace('1_', '')
+         .replace('2_', '');
+
+  return img.set('system:index', id);
+  
+}));
+
+// Push images to bands
+var pft_all = pft_ic.toBands();
+
+print('Final PFT image', pft_all);
+
+// ====================
+// 4. ANALYZE =========
+// ====================
+
+// 4.1 CALCULATE WEIGHTED AREA ==========
+
+// Get pixel area and mask to match pft
+var area = ee.Image.pixelArea().rename('area');
+
+// Multiply to get PFT weighted area
+var pft_weighted_area = pft_all.divide(100).multiply(area);
+
+// Add back in total area
+var pft_weighted_area_final = pft_weighted_area.addBands(area);
+
+Map.addLayer(pft_weighted_area_final, null, 'pft_weighted_area_final');
+
+// 4.2 REDUCE REGIONS ==========
+
+// Get projection information
+var pft_proj = pft_all.projection();
+var pft_res = pft_all.projection().nominalScale();
+var pft_crs = pft_all.projection().wkt();
+var pft_crs_transform = [30,0,-2236470,0,-30,3791120]; // Copied from projection to preserve list formatting for use in future functions
+print('PFT projection', pft_proj);
+print('PFT CRS', pft_crs);
+print('PFT CRS transform', pft_crs_transform);
+
+// Calculate area
+var pft_weighted_area_dict = pft_weighted_area_final.reduceRegions({
+    collection: control_regions,
+    reducer: ee.Reducer.sum(),
+    scale: pft_res,
+    crs: pft_proj,
+    tileScale: 1
+});
+
+pft_weighted_area_dict = ee.FeatureCollection(pft_weighted_area_dict).map(function(feat){return feat.setGeometry(null)});
+print('PFT weighted area across test regions', pft_weighted_area_dict);
+
+// Get properties
+var properties = pft_weighted_area_dict.propertyNames();
+properties = properties.removeAll(['.geo', 'system.index']).getInfo();
+
+// 4.3 EXPORT ==========
+
+Export.table.toDrive({
+  collection: pft_weighted_area_dict, 
+  description: 'pft_change_background', 
+  folder: 'pft_change_background',
+  selectors: properties
+});

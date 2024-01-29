@@ -1,0 +1,409 @@
+// =====================================================================
+
+// CODE DESCRIPTION
+
+// This script calculates pixel-wise Sen's slopes of vegetation change, along with Mann-Kendall significance values
+
+// CODE AUTHOR: Kathleen Orndahl
+// CONTACT: kathleen.orndahl@nau.edu
+
+// Link to GEE snapshot: https://code.earthengine.google.com/abc1473b810aed8feab636f17baf2cc6
+
+// =====================================================================
+
+// ====================
+// 1. SET UP ==========
+// ====================
+
+// 1.1 SET PARAMETERS AND FUNCTIONS ==========
+
+var fxns = require('users/kmo265/functions:functions');
+
+var start_year = 1992;
+var end_year = 2020;
+
+var out_crs = fxns.epsg102001;
+var out_transform = fxns.epsg102001_30m;
+
+// 1.2 READ IN DATA ==========
+
+// AOI
+var aoi = ee.FeatureCollection("users/kmo265/Caribou/ssf_outline");
+
+// Annual PFT cover maps
+var pft_ts = ee.ImageCollection('projects/foreststructure/ABoVE/BiomeShift/Alaska_Yukon_PFT_202207_Filled')
+             .select('cover')
+             .filter(ee.Filter.calendarRange(start_year, end_year, 'year'));
+print('Annual PFT cover maps:', pft_ts);
+
+// 1.3 TIDY DATA ==========
+
+// Partition by PFT
+var decid = pft_ts.filter(ee.Filter.eq('response', 'allDecShrub'));
+var eg = pft_ts.filter(ee.Filter.eq('response', 'allEvShrub'));
+var forb = pft_ts.filter(ee.Filter.eq('response', 'allForb'));
+var gram = pft_ts.filter(ee.Filter.eq('response', 'graminoid'));
+var lichen = pft_ts.filter(ee.Filter.eq('response', 'tmlichenLight2'));
+var alder = pft_ts.filter(ee.Filter.eq('response', 'alnshr'));
+var birch = pft_ts.filter(ee.Filter.eq('response', 'betshr'));
+var willow = pft_ts.filter(ee.Filter.eq('response', 'salshr'));
+
+// Create list of image collections
+var pfts = ee.List([decid, eg, forb, gram, lichen, alder, birch, willow]);
+print('Annual PFT cover maps, grouped by PFT:', pfts);
+print('Annual PFT cover maps, grouped by PFT, example:', pfts.get(0));
+
+// =========================
+// 2. SENS SLOPES ==========
+// =========================
+
+// 2.1 PREPARE DATA FOR SENS SLOPES ==========
+
+// Create temporal filter -- only gets images that come after a specified image, chronologically
+var afterFilter = ee.Filter.lessThan({
+  leftField: 'system:time_start',
+  rightField: 'system:time_start'
+});
+
+// Function to create image collections where each image stores all images that come after it chronologically in a property called 'after'
+// Map over list of image collections
+var joinTS = function(imgColl){
+  return ee.ImageCollection(ee.Join.saveAll('after').apply({
+  primary: imgColl,
+  secondary: imgColl,
+  condition: afterFilter
+}))};
+
+// Map over list of image collections to create time series for Sens slopes
+var pfts_TS_joined = pfts.map(joinTS);
+print('Joined PFT time series:', pfts_TS_joined);
+print('Joined PFT time series, example:', pfts_TS_joined.get(0));
+
+// 2.2 CALCULATE SENS SLOPES ==========
+
+// Function to calculate slope between consecutive images
+var slope = function(i, j) { // i and j are images
+  return ee.Image(j).subtract(i)
+      .divide(ee.Image(j).date().difference(ee.Image(i).date(), 'years'))
+      .rename('slope')
+      .float();
+};
+  
+// Function to loop across PFT image collections and calculate pairwise slopes
+var calcSlopes = function(imgColl){
+  
+  // Get PFT
+  var current_pft = ee.ImageCollection(imgColl).first().get('response');
+  
+  // Loop across the PFT image collection
+  // Each image represents a year in the time series 1992-2020 and is called 'current'
+  var pftSlopes = ee.ImageCollection(ee.ImageCollection(imgColl).map(function(current) {
+    
+    // Get current year
+    var current_yr = current.date().get('year');
+  
+    // Get the 'after' property from the 'current' image
+    // This property contains a list of images that occur after the 'current' image
+    var afterCollection = ee.ImageCollection.fromImages(current.get('after'));
+    
+    // Loop across the images in the 'after' list
+    var afterSlopes = afterCollection.map(function(after) {
+      
+      // Get 'after' year
+      var after_yr = after.date().get('year');
+      
+      // Calculate the slope between each image in the 'after' list and the 'current' image
+      return ee.Image(slope(current, after))
+                 .set('slope_start', current_yr)
+                 .set('slope_end', after_yr)
+                 .set('pft', current_pft);
+      
+    });
+    
+    // Return an image collection where each image is the slope between one of the 'after' images and the 'current' image
+    return afterSlopes;
+  
+  }).flatten()); 
+  
+  return pftSlopes;
+  
+};
+
+// Function to calculate Sens slope i.e. median slope for each PFT
+var calcSensSlope = function(imgColl){
+  
+  var pft_name = ee.ImageCollection(imgColl).first().get('pft');
+  var median_slope = ee.ImageCollection(imgColl).reduce(ee.Reducer.median(), 2); // Set parallelScale
+  
+  return ee.Image(median_slope).set('pft', pft_name).rename('sens_slope_').regexpRename('$', pft_name);
+  
+};
+
+// Map over list of image collections to calculate slopes
+var slopes = pfts_TS_joined.map(calcSlopes);
+print('PFT time series slopes:', slopes);
+print('PFT time series slopes, example:', slopes.get(0));
+
+// Map over list of image collections to calculate Sens slopes i.e. median slope
+var sensSlopes = slopes.map(calcSensSlope);
+print('PFT time series sens slopes:', sensSlopes);
+print('PFT time series sens slopes, example:', sensSlopes.get(0));
+
+// ==========================
+// 3. MANN-KENDALL ==========
+// ==========================
+
+// Function to calculate sign between consecutive images
+var sign = function(i, j) { // i and j are images
+  return ee.Image(j).neq(i) // Zero case
+      .multiply(ee.Image(j).subtract(i).clamp(-1, 1)).int()
+      .rename('mk_trend');
+};
+
+// Function to loop across PFT image collections and calculate pairwise signs
+var calcSigns = function(imgColl){
+  
+  // Get PFT
+  var current_pft = ee.ImageCollection(imgColl).first().get('response');
+
+  // Loop across the PFT image collection
+  // Each image represents a year in the time series 1992-2020 and is called 'current'
+  var pftSigns = ee.ImageCollection(imgColl).map(function(current) {
+    
+    // Get current year
+    var current_yr = current.date().get('year');
+  
+    // Get the 'after' property from the 'current' image
+    // This property contains a list of images that occur after the 'current' image
+    var afterCollection = ee.ImageCollection.fromImages(current.get('after'));
+  
+    // Loop across the images in the 'after' list
+    var afterSigns = afterCollection.map(function(after) {
+      
+      // Get 'after' year
+      var after_yr = after.date().get('year');
+      
+      // Calculate the sign between each image in the 'after' list and the 'current' image
+      // The unmask is to prevent accumulation of masked pixels that
+      // result from the undefined case of when either current or image
+      // is masked.  It won't affect the sum, since it's unmasked to zero.
+      return ee.Image(sign(current, after)).unmask(0)
+                                           .set('sign_start', current_yr)
+                                           .set('sign_end', after_yr)
+                                           .set('pft', current_pft);
+      
+    });
+    
+    // Return an image collection where each image is the slope between one of the 'after' images and the 'current' image
+    return afterSigns;
+    
+    // Set parallelScale to avoid User memory limit exceeded.
+  });
+  
+  // Format and get sum of stack of signs
+  pftSigns = ee.ImageCollection(pftSigns.flatten().toList(10000)).reduce('sum', 2); // Set parallelScale to avoid User memory limit exceeded
+  
+  return pftSigns.set('pft', current_pft).rename('mk_trend_').regexpRename('$', current_pft);
+
+};
+
+// Map over list of image collections to calculate slopes
+var mk_trends = pfts_TS_joined.map(calcSigns);
+print('PFT time series Mann-Kendall trend:', mk_trends);
+print('PFT time series Mann-Kendall trend, example:', mk_trends.get(0));
+
+// ===================================
+// 4. MANN-KENDALL VARIANCE ==========
+// ===================================
+
+var seq = ee.List.sequence(0, pfts.size().subtract(1));
+
+var coll = ee.ImageCollection(pfts.get(0));
+
+// Function to compute tie group sizes in a sequence.  The first group is discarded.
+var group = function(array) {
+  var length = array.arrayLength(0);
+  // Array of indices.  These are 1-indexed.
+  var indices = ee.Image([1])
+      .arrayRepeat(0, length)
+      .arrayAccum(0, ee.Reducer.sum())
+      .toArray(1);
+  var sorted = array.arraySort();
+  var left = sorted.arraySlice(0, 1);
+  var right = sorted.arraySlice(0, 0, -1);
+  // Indices of the end of runs.
+  var mask = left.neq(right)
+  // Always keep the last index, the end of the sequence.
+      .arrayCat(ee.Image(ee.Array([[1]])), 0);
+  var runIndices = indices.arrayMask(mask);
+  // Subtract the indices to get run lengths.
+  var groupSizes = runIndices.arraySlice(0, 1)
+      .subtract(runIndices.arraySlice(0, 0, -1));
+  return groupSizes;
+};
+
+// See equation 2.6 in Sen (1968).
+var factors = function(image) {
+  return image.expression('b() * (b() - 1) * (b() * 2 + 5)');
+};
+
+// Function to calculate Mann-Kendall variance
+var calc_mk_variance = function(idx){
+  
+  var pft_ic = ee.ImageCollection(pfts.get(idx)); // Get original image collection
+  var pft_joined =  ee.ImageCollection(pfts_TS_joined.get(idx)); // Get image collection with 'after' images joined
+  var pft_name = pft_ic.first().get('response');
+  
+  // Find ties within image collection
+  // Values that are in a group (ties).  Set all else to zero.
+  var groups = pft_ic.map(function(i) {
+    var matches = pft_ic.map(function(j) {
+      return i.eq(j); // i and j are images.
+    }).sum();
+    return i.multiply(matches.gt(1));
+  });
+  
+  var groupSizes = group(groups.toArray());
+  var groupFactors = factors(groupSizes);
+  var groupFactorSum = groupFactors.arrayReduce('sum', [0])
+        .arrayGet([0, 0]);
+  
+  var count = pft_joined.count();
+  var pft_var = factors(count)
+    .subtract(groupFactorSum)
+    .divide(18)
+    .float();
+    
+  return pft_var.set('pft', pft_name).rename('mk_variance_').regexpRename('$', pft_name);
+  
+};
+
+var mk_variance = seq.map(calc_mk_variance);
+
+print('PFT time series Mann-Kendall variance:', mk_variance);
+print('PFT time series Mann-Kendall variance, example:', mk_variance.get(0));
+
+// =======================================
+// 5. MANN-KENDALL SIGNIFICANCE ==========
+// =======================================
+
+// https://en.wikipedia.org/wiki/Error_function#Cumulative_distribution_function
+function eeCdf(z) {
+  return ee.Image(0.5)
+      .multiply(ee.Image(1).add(ee.Image(z).divide(ee.Image(2).sqrt()).erf()));
+}
+
+// Function to calculate two-sided p-test
+var calc_p_two_sided = function(idx){
+  
+  var pft_mk_trend = ee.Image(mk_trends.get(idx));
+  var pft_mk_variance = ee.Image(mk_variance.get(idx));
+  var pft_name = pft_mk_trend.get('pft');
+
+  // Compute Z-statistics
+  var zero = pft_mk_trend.multiply(pft_mk_trend.eq(0));
+  var pos = pft_mk_trend.multiply(pft_mk_trend.gt(0)).subtract(1);
+  var neg = pft_mk_trend.multiply(pft_mk_trend.lt(0)).add(1);
+  
+  var z = zero
+    .add(pos.divide(pft_mk_variance.sqrt()))
+    .add(neg.divide(pft_mk_variance.sqrt()));
+  
+  // Calculate p-value, multiply by 2 to make it 2-sided
+  // Because we are taking the absolute value, Z is always positive so we use 1-cdf(z)
+  var p = ee.Image(1).subtract(eeCdf(z.abs())).multiply(2);
+  
+  return p.set('pft', pft_name).rename('mk_p_').regexpRename('$', pft_name);
+  
+};
+
+var mk_p_values = seq.map(calc_p_two_sided);
+
+print('PFT time series Mann-Kendall P-values:', mk_p_values);
+print('PFT time series Mann-Kendall P-values, example:', mk_p_values.get(0));
+
+var mk_p_sig = mk_p_values.map(function(img){return ee.Image(img).lte(0.05).rename('mk_p_lte_0_05_').regexpRename('$', ee.Image(img).get('pft'))});
+
+print('PFT time series Mann-Kendall significant changes P <= 0.05:', mk_p_sig);
+print('PFT time series Mann-Kendall significant changes P <= 0.05, example:', mk_p_sig.get(0));
+
+// =======================
+// 6. VISUALIZE ==========
+// =======================
+
+// Lichens
+var ex_slope = ee.Image(sensSlopes.get(4));
+var ex_trend = ee.Image(mk_trends.get(4));
+var ex_var = ee.Image(mk_variance.get(4));
+var ex_p = ee.Image(mk_p_values.get(4));
+var ex_p_sig = ee.Image(mk_p_sig.get(4));
+
+Map.addLayer(ex_slope, {min: -0.5, max: 0.5, palette: ['red', 'white', 'green']}, 'Sens slope');
+Map.addLayer(ex_trend, {min: -400, max: 400, palette: ['red', 'white', 'green']}, 'MK trend');
+Map.addLayer(ex_var, {min: 0, max: 2500}, 'variance');
+Map.addLayer(ex_p, {min: 0,  max: 0.5}, 'P-value');
+Map.addLayer(ex_p_sig, {min: 0, max: 1}, 'significant trends');
+
+// ==================
+// 7. TIDY ==========
+// ==================
+
+// Convert to images and remove prepended numbers
+sensSlopes = ee.ImageCollection(sensSlopes).toBands().regexpRename("^[^_]*_", "");
+mk_trends = ee.ImageCollection(mk_trends).toBands().regexpRename("^[^_]*_", "");
+mk_variance = ee.ImageCollection(mk_variance).toBands().regexpRename("^[^_]*_", "");
+mk_p_values = ee.ImageCollection(mk_p_values).toBands().regexpRename("^[^_]*_", "");
+mk_p_sig = ee.ImageCollection(mk_p_sig).toBands().regexpRename("^[^_]*_", "");
+
+// OPTIONAL: scale and convert to smaller data types for export
+// Uint16: 0 to 65,535
+// int16: -32,768 to 32,767
+sensSlopes = sensSlopes.multiply(10000).toInt16();
+mk_trends = mk_trends.toInt16();
+mk_variance = mk_variance.toUint16();
+mk_p_values = mk_p_values.multiply(10000).toUint16();
+mk_p_sig = mk_p_sig;
+
+print('Final Sens slopes:', sensSlopes);
+print('Final Mann-Kendall trends:', mk_trends);
+print('Final Mann-Kendall variance:', mk_variance);
+print('Final Mann-Kendall P-values:', mk_p_values);
+print('Final Mann-Kendall significant changes P <= 0.025:', mk_p_sig);
+
+// Combine into single image for export
+var pft_trends = sensSlopes.addBands(mk_p_values).set('notes', 'values scaled by x10,000');
+print('Final trend image:', pft_trends);
+
+var min_max = pft_trends.reduceRegion(ee.Reducer.minMax(), aoi);
+print('Minimum and maximum values:', min_max);
+
+// ====================
+// 8. EXPORT ==========
+// ====================
+
+Export.image.toAsset({
+  image: pft_trends, 
+  description: 'pft_trends_' + start_year + '_' + end_year, 
+  assetId: 'users/kmo265/Caribou/pft_trends_' + start_year + '_' + end_year, 
+  region: aoi,
+  crs: out_crs,
+  crsTransform: out_transform, 
+  maxPixels: 1e13
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

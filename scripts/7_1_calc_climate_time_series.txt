@@ -1,0 +1,163 @@
+// =====================================================================
+
+// CODE DESCRIPTION
+
+// This script calculates vegetation change (weighted area) across across background areas
+
+// CODE AUTHOR: Kathleen Orndahl
+// CONTACT: kathleen.orndahl@nau.edu
+
+// Link to GEE snapshot: https://code.earthengine.google.com/abb7b07dec1b40f24b40cc1cdbc33bec
+
+// =====================================================================
+
+// ====================
+// 1. SET UP ==========
+// ====================
+
+// 1.1 LOAD DATA ==========
+
+var core_uplands = ee.FeatureCollection("users/kmo265/Caribou/core_uplands");
+var terraClimate_monthly = ee.ImageCollection("IDAHO_EPSCOR/TERRACLIMATE");
+var ssf_outline = ee.FeatureCollection("users/kmo265/Caribou/ssf_outline");
+var ak_yt_nwt = ee.FeatureCollection("users/kmo265/AOIs/AK_YT_NWT");
+
+// Load external functions
+var fxns = require('users/kmo265/functions:functions');
+var temporalSegmentation = require('users/wiell/temporalSegmentation:temporalSegmentation'); // Load temporal segmentation module
+
+// 1.2 SET PARAMETERS ==========
+
+// Choose start and end year
+var start_year = 1958;
+var end_year = 2020;
+
+// ====================
+// 2. CREATE AOIs =====
+// ====================
+
+var core = ee.Feature(core_uplands.first()).set('range', 'core');
+var full = ee.Feature(ssf_outline.first()).set('range', 'full');
+var extended = ee.Feature(ssf_outline.first()).difference(ee.Feature(core_uplands.first())).set('range', 'extended');
+var ak_yt = ee.Feature(ak_yt_nwt.filter(ee.Filter.neq('NAME', 'Northwest Territories')).union().first()).set('range', 'ak_yt');
+var ak_yt_extended = ee.Feature(ak_yt).difference(ee.Feature(ssf_outline.first())).set('range', 'ak_yt_extended');
+
+var AOIs = ee.FeatureCollection([core, full, ak_yt, extended, ak_yt_extended]);
+
+Map.addLayer(ee.Feature(AOIs.filter(ee.Filter.eq('range', 'core')).first()), '', 'core');
+Map.addLayer(ee.Feature(AOIs.filter(ee.Filter.eq('range', 'extended')).first()), '', 'extended');
+Map.addLayer(ee.Feature(AOIs.filter(ee.Filter.eq('range', 'full')).first()), '', 'full');
+Map.addLayer(ee.Feature(AOIs.filter(ee.Filter.eq('range', 'ak_yt')).first()), '', 'ak_yt');
+Map.addLayer(ee.Feature(AOIs.filter(ee.Filter.eq('range', 'ak_yt_extended')).first()), '', 'ak_yt_extended');
+
+// ========================================
+// 3. CREATE ANNUAL CLIMATE VARIABLES =====
+// ========================================
+
+var climate_years = ee.List.sequence(start_year, end_year, 1);
+
+// Get climate metadata
+var climate_res = terraClimate_monthly.first().select('aet').projection().nominalScale();
+var climate_proj = terraClimate_monthly.first().select('aet').projection();
+
+// Filter to study period
+terraClimate_monthly = terraClimate_monthly.filter(ee.Filter.calendarRange({start: start_year, end: end_year, field: 'year'}));
+
+// Add mean monthy temperature
+terraClimate_monthly = terraClimate_monthly.map(function(img){
+  var tmmx = img.select('tmmx');
+  var tmmn = img.select('tmmn');
+  var tmavg = tmmx.add(tmmn).divide(2).rename('tmavg');
+  return img.addBands(tmavg);
+});
+
+// Map over years
+var terraClimate_annual = ee.ImageCollection(climate_years.map(function(year){
+  
+  // Get all terra climate images for current year
+  var TC = terraClimate_monthly.filter(ee.Filter.calendarRange({start: year, field: 'year'}));
+  
+  // Calculate annual means
+  var TC_means = TC.select(['pdsi', 'soil', 'srad', 'vap', 'vpd', 'vs', 'tmavg']);
+  var means = TC_means.mean();
+  means = fxns.addBandSuffix(means, '_mean');
+  
+  // Calculate annual max
+  var TC_max = TC.select(['tmmx']);
+  var max = TC_max.max();
+  max = fxns.addBandSuffix(max, '_max');
+
+  // Calculate annual min
+  var TC_min = TC.select(['tmmn']);
+  var min = TC_min.min();
+  min = fxns.addBandSuffix(min, '_min');
+
+  // Calculate annual standard deviation
+  var TC_sd = TC.select(['tmavg']);
+  var sd = TC_sd.reduce(ee.Reducer.stdDev());
+
+  // Calculate annual sums
+  var TC_sums = TC.select(['aet', 'def', 'pet', 'pr', 'ro', 'swe']);
+  var sums = TC_sums.sum();
+  sums = fxns.addBandSuffix(sums, '_sum');
+
+  // Get average temperature
+  var temp_avg = TC.select('tmavg');
+  
+  // Map over each months average temperature and mask out any temperatures less than or equal to 0 
+  temp_avg = temp_avg.map(function(img){
+    return img.updateMask(img.gt(0));
+  });
+  
+  // Add up monthly temperatures above 0 to get summer warmth index
+  var swi = temp_avg.sum().rename('swi');
+  
+  return means.addBands(max).addBands(min).addBands(sd).addBands(sums).addBands(swi).copyProperties(TC.first(), ['system:time_start']).set('year', year);
+  
+}));
+
+print('Annual climate', terraClimate_annual);
+
+// ====================
+// 4. ANALYZE =========
+// ====================
+
+// 4.1 CALCULATE YEARLY CLIMATE SUMMARIES FOR AOIs ==========
+
+// Function to reduce climate variables over AOIs
+var reduce_climate = function(img){
+  
+  // Create combined reducer: mean, standard deviation, and count
+  var reducers = ee.Reducer.mean().combine({
+    reducer2: ee.Reducer.stdDev(),
+    sharedInputs: true
+  }).combine({
+    reducer2: ee.Reducer.count(),
+    sharedInputs: true
+  });
+
+  // Reduce over AOIs
+  var climate_avg_std = img.reduceRegions({
+      collection: AOIs,
+      reducer: reducers,
+      scale: climate_res
+  });
+    
+  climate_avg_std = climate_avg_std.map(function(feat){return feat.set('year', img.get('year'))});
+
+  return climate_avg_std;
+
+};
+
+var climate_avgs = terraClimate_annual.map(reduce_climate).flatten();
+
+print('Yearly climate averages', climate_avgs);
+
+// 4.2 EXPORT ==========
+
+Export.table.toDrive({
+  collection: climate_avgs,
+  description: 'climate_time_series',
+  folder: 'climate_time_series',
+});
+

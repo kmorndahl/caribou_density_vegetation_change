@@ -1,0 +1,486 @@
+// =====================================================================
+
+// CODE DESCRIPTION
+
+// This script calculates vegetation change (categorical) across seasonal ranges and levels of caribou density and land cover
+
+// CODE AUTHOR: Kathleen Orndahl
+// CONTACT: kathleen.orndahl@nau.edu
+
+// Link to GEE snapshot: https://code.earthengine.google.com/38c38c9eca326ef77e4851b92e2754c1
+
+// =====================================================================
+
+// ====================
+// 1. SET UP ==========
+// ====================
+ 
+// 1.1 LOAD DATA ==========
+
+// Load ROI
+var ssf_outline = ee.FeatureCollection("users/kmo265/Caribou/ssf_outline");
+
+// Load external functions
+var fxns = require('users/kmo265/functions:functions');
+var temporalSegmentation = require('users/wiell/temporalSegmentation:temporalSegmentation'); // Load temporal segmentation module
+ 
+// 1.2 SET PARAMETERS ==========
+
+// Projection information
+var out_crs = fxns.epsg102001;
+var out_transform = fxns.epsg102001_30m;
+var res = 30;
+print('Output CRS', out_crs);
+print('Output CRS transform', out_transform);
+print('Output resolution', res);
+
+// Caribou density parameters
+var start_year = 1992;
+var end_year = 2020;
+
+// Land cover parameters
+var year_range = start_year + '_' + end_year;
+var lcYear = start_year;
+ 
+ // PFT parameters
+var pft_list = ['allDecShrub', 'allEvShrub', 'graminoid', 'allForb', 'tmlichenLight2', 'alnshr', 'betshr', 'salshr'];
+print('PFTs', pft_list);
+ 
+// ====================================
+// 2. CREATE VEGETATION DATA ==========
+// ====================================
+
+// Get annual PFT cover maps
+// Separate image for each PFT/year combination
+var pft_ic = ee.ImageCollection('projects/foreststructure/ABoVE/BiomeShift/Alaska_Yukon_PFT_202207_Filled').select('cover');
+var pft_ic_size = pft_ic.size();
+
+// Filter to year range
+var pft_start = pft_ic.filter(ee.Filter.calendarRange(start_year, start_year, 'year'));
+var pft_end = pft_ic.filter(ee.Filter.calendarRange(end_year, end_year, 'year'));
+pft_ic = pft_start.merge(pft_end);
+
+// Filter to PFTs of choice
+pft_ic = pft_ic.filter(ee.Filter.inList('response', pft_list));
+
+// Rename bands
+pft_ic = ee.ImageCollection(pft_ic.toList(pft_ic_size).map(function(img){ // Convert to list to allow changing system:index
+  
+  img = ee.Image(img);
+  var id = ee.String(img.id());
+  id = id.replace('20210911_pft_noRatePreds_', '')
+         .replace('v20220325_alaska_yukon_', '')
+         .replace('Light2', '')
+         .replace('1_', '')
+         .replace('2_', '');
+
+  return img.set('system:index', id);
+  
+}));
+
+// Push images to bands
+var pft_all = pft_ic.toBands();
+
+print('Final PFT image', pft_all);
+
+// =======================================
+// 3. CREATE GROUPING VARIABLES ==========
+// =======================================
+
+// 3.1 LAND COVER ==========
+
+// Bring in land cover data
+var above_lc = ee.Image('projects/foreststructure/ABoVE/ORNL_DAAC/ABoVE_LandCover_v01'),
+    above_lc_palette = [
+      "#003300", //01: Evergreen Forest
+      "#00dd00", //02: Deciduous Forest
+      "#008800", //03: Mixed Forest
+      "#79843b", //04: Woodland
+      "#694704", //05: Low Shrub
+      "#ad3714", //06: Tall Shrub
+      "#afa377", //07: Open Shrubs
+      "#eac856", //08: Herbaceous
+      "#a38d1e", //09: Tussock Tundra
+      "#dfe5a2", //10: Sparsely Vegetated
+      "#57da92", //11: Fen
+      "#d18523", //12: Bog
+      "#15bbe9", //13: Shallows/littoral
+      "#666666", //14: Barren
+      "#96b1d4"  //15: Water
+    ],
+    above_lc_viz = {min:1, max:15, palette: above_lc_palette};
+
+// Get appropriate land cover year for analysis
+var lc_year = ee.Algorithms.If(ee.Number(lcYear).gt(2014), 2014, lcYear); // Land cover only goes until 2014, if selected year is later than that, default to the latest available year, 2014
+var prefix = ee.String('y');
+var lc_year_str = prefix.cat(ee.Number(lc_year).format('%.0f'));
+var lc = ee.Image(above_lc.select([lc_year_str]));
+
+print('Land cover: ', lc);
+
+// Get land cover information
+var LCs = ee.List.sequence(1, 15, 1);
+var LC_names = ['LC1', 'LC2', 'LC3', 'LC4', 'LC5', 'LC6', 'LC7', 'LC8', 'LC9', 'LC10', 'LC11', 'LC12', 'LC13', 'LC14', 'LC15'];
+
+// One hot encode land cover
+var oneHotEncode = function(value){
+  var LC = ee.Image.constant(value);
+  return lc.updateMask(lc.eq(LC));
+};
+var lc_binary = LCs.map(oneHotEncode);
+
+// Convert list of images to multiband image and rename bands
+lc_binary = ee.ImageCollection.fromImages(lc_binary).toBands().rename(LC_names);
+
+// Save projection and scale information
+var lc_proj = lc_binary.projection();
+var lc_res = lc_binary.projection().nominalScale();
+
+print('Land cover, binary: ', lc_binary);
+
+// 3.2 BINNED CARIBOU SPATIAL DENSITY ==========
+
+// NOTE: occurrence distrubution is NAD83 / Yukon Albers (EPSG:3578)
+// This is not a CRS known to GEE, so it shows up as an 'unknown' projection
+
+var od_seasonal_bin3_0_01 = ee.ImageCollection("users/kmo265/Caribou/od_seasonal_all_bin3_ei_0_01_weighted"),
+
+// Tidy metadata
+od_seasonal_bin3_0_01 = ee.ImageCollection(od_seasonal_bin3_0_01.map(function(img){
+  var season = ee.String(img.id().split('_').slice(2, 3).get(0));
+  return img.set('season', season).rename('density');
+}));
+
+print('The seasonal binned caribou spatial density collection is', od_seasonal_bin3_0_01);
+
+// ==========================
+// 4. CREATE MASKS ==========
+// ==========================
+
+// 4.1 FIRE ==========
+
+// Load data
+var fires_CA = ee.FeatureCollection("users/kmo265/Fires/Full_Database/fires_Canada_clean");
+var fires_US = ee.FeatureCollection("users/kmo265/Fires/Full_Database/fires_AK_clean");
+
+// Combine collections
+var fires_all = fires_US.merge(fires_CA);
+
+// Create mask
+var fires_img_all = fires_all.reduceToImage(['ACRES'], ee.Reducer.mean()); // Convert to image
+var fires_mask_all = fires_img_all.unmask().not(); // Create mask
+
+// 4.2 PHENOLOGY ==========
+
+// Get snow DOY
+var snowDoysCcdcNdsi = ee.Image('projects/foreststructure/ABoVE/CCDC/CCDC_ABoVE_L4578SR_1984_2020_NDSI_SnowDoys_v20201116_forCCDC');
+var lastSnowDoy_NDSI_p1 = snowDoysCcdcNdsi.select(['lastSnowDoy_NDSI_p1']);
+var lastSnowDoy_NDSI_p4 = snowDoysCcdcNdsi.select(['lastSnowDoy_NDSI_p4']);
+var firstSnowDoy_NDSI_p1 = snowDoysCcdcNdsi.select(['firstSnowDoy_NDSI_p1']);
+var firstSnowDoy_NDSI_p4 = snowDoysCcdcNdsi.select(['firstSnowDoy_NDSI_p4']);
+
+// Calculate phenology metrics
+// NOTE: phenology metrics are based on the reference year 2018 and are NOT calcualted per year (i.e. they are constant)
+var lastSnowDoy = lastSnowDoy_NDSI_p1.rename('phenology_lastSnowDoy'),
+    firstSnowDoy = firstSnowDoy_NDSI_p1.rename('phenology_firstSnowDoy'),
+    snowFreeLength = firstSnowDoy.subtract(lastSnowDoy).rename('phenology_snowFreeDays');
+var phenologyMetrics = lastSnowDoy.addBands(firstSnowDoy).addBands(snowFreeLength);
+
+// Create phenology mask - only keep pixels with > 1 snow-free day
+// Masks out water, snow, ice
+var phenology_mask = phenologyMetrics.select('phenology_snowFreeDays').gt(1);
+phenologyMetrics = phenologyMetrics.updateMask(phenology_mask);
+
+// 4.3 LAND COVER ==========
+
+// Load data
+var water_jrc = ee.Image("JRC/GSW1_3/GlobalSurfaceWater");
+
+// Create barrens mask
+var barren_mask = lc.neq(14); // Only keep pixels where land cover is not barren
+
+// Create water mask
+var water_mask = water_jrc.select('occurrence').unmask(0).lte(50); // Only keep pixels where water occurrence is <= 50%
+
+// 4.4 LAND COVER CHANGE ==========
+
+// Load data
+var forest_change = ee.Image("UMD/hansen/global_forest_change_2021_v1_9");
+
+// Get land cover start and end year
+var lc_start_year = ee.Algorithms.If(ee.Number(start_year).gt(2014), 2014, start_year); // Land cover only goes until 2014, if current year is later than that, default to the latest available year, 2014
+var lc_end_year = ee.Algorithms.If(ee.Number(end_year).gt(2014), 2014, end_year); // Land cover only goes until 2014, if current year is later than that, default to the latest available year, 2014
+var prefix = ee.String('y');
+var start_str = prefix.cat(ee.Number(lc_start_year).format('%.0f'));
+var end_str = prefix.cat(ee.Number(lc_end_year).format('%.0f'));
+var lc_start = ee.Image(above_lc.select([start_str]));
+var lc_end = ee.Image(above_lc.select([end_str]));
+var lc_start_end = lc_start.addBands(lc_end);
+
+// Get tree cover start and end year
+var hansen_start_year = ee.Number(2000).subtract(2000); //Subtract 2000 to get correct values 
+var hansen_end_year = ee.Number(end_year).subtract(2000); // Subtract 2000 to get correct values 
+
+// Create forest loss mask
+var lc_forest_loss = lc_start_end.select(start_str).lte(4).and(lc_start_end.select(end_str).gt(4)).not(); // From Wang land cover layer
+var hansen_forest_loss = forest_change.select('lossyear')
+                            .updateMask(forest_change.select('lossyear').lte(hansen_end_year)) // Only loss years less than or equal to the end of the study period
+                            .updateMask(forest_change.select('lossyear').gt(hansen_start_year)) // Only loss years greater than the start of the study period
+                            .unmask() // Convert to binary ones and zeros
+                            .eq(0); // Reverse so areas of forest loss are zeros
+var forest_loss_mask = lc_forest_loss.multiply(hansen_forest_loss); // Combine Wang land cover and Hansen forest cover masks
+
+// Create water change mask
+// JRC water product has a 'transition' band which tracks water changes from the beginning (1984) to the end (2021) of the time series
+// Only keep areas that did not have a change in water occurrence: 'No Change', 'Permanent', 'Seasonal', 'Ephemeral permanent', 'Ephemeral seasonal'
+var water_change_mask = water_jrc.select('transition').eq(0)
+                               .or(water_jrc.select('transition').eq(1))
+                               .or(water_jrc.select('transition').eq(4))
+                               .or(water_jrc.select('transition').eq(9))
+                               .or(water_jrc.select('transition').eq(10))
+                               .unmask(1); // Masked areas are not water, unmask to 1 so these are kept when applying the mask
+
+// 4.5 CARIBOU STEP SELECTION FUNCTIONS (SSF) ==========
+
+// Load data
+var ssf_seasonal = ee.ImageCollection("users/kmo265/Caribou/fmch_ssf_seasonal");
+
+// Add season, rename band
+ssf_seasonal = ee.ImageCollection(ssf_seasonal.map(function(img){
+  var season = img.id().split('_').slice(0, -3).join('');
+  return img.set('season', season).rename('selection_prob');
+}));
+
+// Calculate overall SSF
+var ssf_overall = ssf_seasonal.mean().round();
+
+// Add overall SSF to seasonal SSF collection
+ssf_seasonal = ee.ImageCollection(ssf_seasonal.toList(10).add(ssf_overall.set('season', 'overall')));
+
+// 4.6 REPORT AREA MASKED ==========
+
+// Calculate total area masked over the study area
+var water_mask_area = water_mask.eq(0).selfMask().multiply(ee.Image.pixelArea()).reduceRegion({reducer: ee.Reducer.sum().unweighted(), geometry: ssf_outline.geometry(), scale: 30, maxPixels: 1e13});
+var phenology_mask_area = phenology_mask.eq(0).selfMask().multiply(ee.Image.pixelArea()).reduceRegion({reducer: ee.Reducer.sum().unweighted(), geometry: ssf_outline.geometry(), scale: 30, maxPixels: 1e13});
+var fires_mask_all_area = fires_mask_all.eq(0).selfMask().multiply(ee.Image.pixelArea()).reduceRegion({reducer: ee.Reducer.sum().unweighted(), geometry: ssf_outline.geometry(), scale: 30, maxPixels: 1e13});
+var forest_loss_mask_area = forest_loss_mask.eq(0).selfMask().multiply(ee.Image.pixelArea()).reduceRegion({reducer: ee.Reducer.sum().unweighted(), geometry: ssf_outline.geometry(), scale: 30, maxPixels: 1e13});
+var water_change_mask_area = water_change_mask.eq(0).selfMask().multiply(ee.Image.pixelArea()).reduceRegion({reducer: ee.Reducer.sum().unweighted(), geometry: ssf_outline.geometry(), scale: 30, maxPixels: 1e13});
+print('Water mask area:', water_mask_area); // 1108357679.1837463 m2 = 1108.3576791837463 km2
+print('Phenology mask area:', phenology_mask_area); // 1201373100 m2 = 1201.3731 km2
+print('Fire mask area:', fires_mask_all_area); // 46791498521.66467 m2 = 46791.498521664675 km2
+print('Forest loss mask area:', forest_loss_mask_area); // 23979297600 m2 = 23979.2976 km2
+print('Water change mask area:', water_change_mask_area); // 509364761.9373169 m2 = 509.36476193731687 km2
+
+// ====================
+// 5. ANALYZE =========
+// ====================
+
+// 5.1 MASK ==========
+// Only need to mask the binned occurrence distribution
+// Later, this will be used to mask PFT and Area images
+
+od_seasonal_bin3_0_01 = od_seasonal_bin3_0_01.map(function(img){return img.unmask({sameFootprint: false}).rename(['density'])}); // Expand
+od_seasonal_bin3_0_01 = od_seasonal_bin3_0_01.map(function(img){return img.updateMask(water_mask)}); // Mask out water
+od_seasonal_bin3_0_01 = od_seasonal_bin3_0_01.map(function(img){return img.updateMask(phenology_mask)}); // Mask out based on snow-free days
+od_seasonal_bin3_0_01 = od_seasonal_bin3_0_01.map(function(img){return img.updateMask(fires_mask_all)}); // Mask out fires
+od_seasonal_bin3_0_01 = od_seasonal_bin3_0_01.map(function(img){return img.updateMask(forest_loss_mask)}); // Mask out forest loss
+od_seasonal_bin3_0_01 = od_seasonal_bin3_0_01.map(function(img){return img.updateMask(water_change_mask)}); // Mask out water change
+print('Masked binned occurrence density collection: ', od_seasonal_bin3_0_01);
+
+// 5.2 PARTITION BY CHANGE CERTAINTY ==========
+
+// Create area image
+var area = ee.Image.pixelArea().rename('area');
+
+// Get start and end year
+var pft_start = pft_all.select('.*1992.*');
+var pft_end = pft_all.select('.*2020.*');
+
+// Get start year and format for extracting RMSE
+var pft_start_ic = pft_start.regexpRename('_1992_cover', '');
+pft_start_ic = ee.ImageCollection(pft_start_ic.bandNames().map(function(name){
+  var img = pft_start_ic.select([name]);
+  return img.set('response', name).set('system:index', name);
+}));
+
+// Get end year and format for extracting RMSE
+var pft_end_ic = pft_end.regexpRename('_2020_cover', '');
+pft_end_ic = ee.ImageCollection(pft_end_ic.bandNames().map(function(name){
+  var img = pft_end_ic.select([name]);
+  return img.set('response', name).set('system:index', name);
+}));
+
+// Get RMSEs
+var pft_start_rmse = ee.ImageCollection(pft_start_ic).map(fxns.assignRMSE)
+                                                     .select('rmse')
+                                                     .toBands();
+var pft_end_rmse = ee.ImageCollection(pft_end_ic).map(fxns.assignRMSE)
+                                                   .select('rmse')
+                                                   .toBands();
+
+// Calculate change
+var pft_change = pft_end.subtract(pft_start).clamp(-100, 100);
+
+// Assign binary change
+var pft_change_categorical = pft_change.where(pft_change.lt(0), -1);
+pft_change_categorical = pft_change_categorical.where(pft_change_categorical.gt(0), 1);
+
+// Get positive change gte RMSE
+var pos_change_gte_start_rmse_mask = pft_change.gte(pft_start_rmse);
+var pos_change_gte_end_rmse_mask = pft_change.gte(pft_end_rmse);
+var pos_change_gte_rmse_mask = pos_change_gte_start_rmse_mask.add(pos_change_gte_end_rmse_mask);
+
+// Get negative change gte RMSE
+var neg_change_gte_start_rmse_mask = pft_change.multiply(-1).gte(pft_start_rmse);
+var neg_change_gte_end_rmse_mask = pft_change.multiply(-1).gte(pft_end_rmse);
+var neg_change_gte_rmse_mask = neg_change_gte_start_rmse_mask.add(neg_change_gte_end_rmse_mask);
+
+// Assign change gte RMSE
+pft_change_categorical = pft_change_categorical.where(pos_change_gte_rmse_mask, 2);
+pft_change_categorical = pft_change_categorical.where(neg_change_gte_rmse_mask, -2);
+
+// 5.3 PREPARE METADATA ==========
+
+// List of LC bands
+var LC_names = ['LC1', 'LC2', 'LC3', 'LC4', 'LC5', 'LC6', 'LC7', 'LC8', 'LC9', 'LC10', 'LC11', 'LC12', 'LC13', 'LC14', 'LC15'];
+
+// List of caribou density values
+var density_classes = ee.List.sequence(1, 4, 1);
+
+// All combinations of LC and caribou density
+var combinations = ee.List(
+  density_classes.iterate(function (e1, acc) {
+    var pairs = LC_names.map(function (e2) {
+      return [e1, e2];
+    });
+    return ee.List(acc).cat(pairs);
+  }, ee.List([]))
+);
+
+// Set parameters
+var ssf_prob = 8;
+print('SSF threshold', ssf_prob);
+
+var scale_name = ee.Number(res).format('%.0f').getInfo();
+var ssf_cutoff_name = ee.Number(ssf_prob).format('%.0f').getInfo();
+
+// 5.4 LOOP SEASONS ==========
+
+var season_list = ['autumn', 'calving', 'overall', 'postcalving', 'precalving', 'rut', 'summer', 'winter'];
+
+var loop_seasons = function(season_name){
+
+  // Get season
+  print('Season', season_name);
+  
+  // Get seasonal OD and SSF
+  var od_season_binned = od_seasonal_bin3_0_01.filter(ee.Filter.eq('season', season_name)).first();
+  print('Binned occurrence distribution, season', od_season_binned);
+  var ssf_season = ssf_seasonal.filter(ee.Filter.eq('season', season_name)).first();
+  print('Step selection function, season', ssf_season);
+  
+  // Filter by SSF probability
+  var ssf_prob_mask = ssf_season.gte(ssf_prob).selfMask();
+  var od_season_binned_ssf = od_season_binned.updateMask(ssf_prob_mask);
+
+  // 5.5 PFT WEIGHTED AREA ==========
+  
+  // Function to reduce over PFT cover image
+  var reduce_histogram = function(combo){
+    
+    // Get current identifiers
+    var dens_id = ee.Number(ee.List(combo).get(0));
+    var lc_id = ee.String(ee.List(combo).get(1));
+  
+    // Get caribou density and land cover masks
+    var dens_mask = od_season_binned_ssf.eq(dens_id); // Includes fire, water, SSF etc. masks
+    var lc_mask = lc_binary.select(lc_id);
+
+    // Mask pft
+    var pft_masked = pft_change_categorical.updateMask(dens_mask).updateMask(lc_mask);
+
+    // Calculate area
+    var pft_masked_dict = pft_masked.reduceRegions({
+        collection: ssf_outline.geometry(),
+        reducer: ee.Reducer.frequencyHistogram(),
+        crs: out_crs,
+        crsTransform: out_transform,
+        tileScale: 1
+    });
+    
+    // Only one feature, extract it
+    pft_masked_dict = pft_masked_dict.first();
+    
+    // Get property names
+    var prop_names = pft_masked_dict.propertyNames().remove('system:index');
+    
+    // Output of reduceRegions creates a property for each band name
+    // Within each property is a dictionary of the pixel counts for each pixel value
+    // {-2 significant decrease, -1 non-significant decrease, 0 no change, 1 non-significant increase, 2 significant increase)
+    // Need to collapse the feature so that each dictionary item is it's own property
+    
+    // Loop through property names (i.e. band names)
+    var subprop_names = prop_names.map(function(prop_name){
+      
+      // For the current property name (i.e. band name), get dictionary
+      var new_feat_dict = ee.Dictionary(pft_masked_dict.get(prop_name));
+  
+      // Rename dictionary keys
+      var rename_new_feat_props = new_feat_dict.keys().map(function(new_feat_prop_name){
+        return ee.String(new_feat_prop_name).replace('^', '_')
+                                            .replace('^', prop_name)
+                                            .replace('-', 'neg')
+                                            .replace('cover', 'count')
+                                            .replace('2020_', '');
+      });
+    
+      // Return renamed dictionary keys as a list
+      return rename_new_feat_props;
+      
+    });
+    
+    // Flatten list of lists into single list
+    subprop_names = subprop_names.flatten();
+
+    // Loop through property names (i.e. band names)
+    var subprop_values = prop_names.map(function(prop_name){
+      
+      // For the current property name (i.e. band name), get dictionary
+      var new_feat_dict = ee.Dictionary(pft_masked_dict.get(prop_name));
+      
+      // Return dictionary values as a list
+      return new_feat_dict.values();
+      
+    });
+
+    // Flatten list of lists into single list
+    subprop_values = subprop_values.flatten();
+    
+    // Using list of dictionary keys and values, create feature
+    var pft_masked_dict_tidy = ee.Feature(null, ee.Dictionary.fromLists(subprop_names, subprop_values)).set('caribou_density', dens_id).set('LC', lc_id).set('season', season_name);
+
+    // Return feature
+    return pft_masked_dict_tidy;
+  
+  };
+  
+  // Map to calcuate frequency histogram counts
+  var pft_masked_all = ee.FeatureCollection(combinations.map(reduce_histogram));
+
+  // Remove geometry
+  pft_masked_all = pft_masked_all.map(function(feat){return feat.setGeometry(null)});
+  print('Frequency histogram reducer, first feature', pft_masked_all.first());
+  
+  // Export to drive
+  Export.table.toDrive({
+    collection: pft_masked_all,
+    description: year_range + '_lc_density_categorical_change_' + season_name,
+    folder: year_range + '_bin3_ei_0_01_weighted_od_' + scale_name + 'm_ssf' + ssf_cutoff_name + '_categorical_change',
+  });
+
+};
+
+season_list.map(loop_seasons);
+
+throw('stop')
+
