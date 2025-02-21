@@ -156,7 +156,7 @@ print('Yearly climate averages', climate_avgs);
 // 4.2 EXPORT ==========
 
 Export.table.toDrive({
-  collection: climate_avgs,
+  collection: climate_avgs.select(['.*'],null,false), // Don't export geometry
   description: 'climate_time_series',
   folder: 'climate_time_series',
 });

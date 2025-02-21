@@ -1,5 +1,5 @@
-######################################################################################################
-######################################################################################################
+################################################################################
+################################################################################
 
 # CODE DESCRIPTION
 
@@ -30,8 +30,8 @@
 #   - Years: 1991-2021
 #   - Seasons: all seasons
 
-######################################################################################################
-######################################################################################################
+################################################################################
+################################################################################
 
 # SET OUTPUT DIRECTORY
 
@@ -39,12 +39,12 @@ inPath = 'data/range_data/ods/0_season_year/0_orig/'
 
 outPath = 'data/range_data/ods/1_season/1_population_weighted/'
 
-######################################################################################################
-######################################################################################################
+################################################################################
+################################################################################
 
-# 1. SET UP ----------------------------------------------------------------------------
+# 1. SET UP --------------------------------------------------------------------
 
-# 1.1 Parameters ----------------------------------------------------------------------------
+# 1.1 Parameters ---------------------------------------------------------------
 
 # Set start and end year for ODs used to identify 'Core Uplands'
 vhf_start = 1991
@@ -53,18 +53,18 @@ vhf_end = 2008
 # Set list of dataset types to loop through
 ds_types = c('vhf', '')
 
-# 1.2 Packages ----------------------------------------------------------------------------
+# 1.2 Packages -----------------------------------------------------------------
 
 library(terra)
 library(sf)
 
-# 1.3 Functions ----------------------------------------------------------------------------
+# 1.3 Functions ----------------------------------------------------------------
 
 # Functions to normalize raster between 0 and 1
-norm_terra <- function (x) {(x-minmax(x)[1])/(minmax(x)[2]-minmax(x)[1])}
-norm_raster <- function (x) {(x-x@data@min)/(x@data@max-x@data@min)}
+norm_terra = function (x) {(x-minmax(x)[1])/(minmax(x)[2]-minmax(x)[1])}
+norm_raster = function (x) {(x-x@data@min)/(x@data@max-x@data@min)}
 
-# 1.4 Read in data ----------------------------------------------------------------------------
+# 1.4 Read in data -------------------------------------------------------------
 
 # Get in occurrence distribution file names
 od_files = list.files(inPath, pattern = "*.tif$", full.names = TRUE)
@@ -81,12 +81,12 @@ print("The population data is:")
 print(population)
 cat("\n")
 
-######################################################################################################
-######################################################################################################
+################################################################################
+################################################################################
 
-# 2. TIDY DATA ----------------------------------------------------------------------------
+# 2. TIDY DATA -----------------------------------------------------------------
 
-# 2.1 OD data ----------------------------------------------------------------------------
+# 2.1 OD data ------------------------------------------------------------------
 
 # Get all season/year combinations
 season_year_df = data.frame()
@@ -102,7 +102,7 @@ for(i in seq_along(od_files)){
 }
 season_year_df$year = as.numeric(season_year_df$year)
 
-# 2.2 Population data ----------------------------------------------------------------------------
+# 2.2 Population data ----------------------------------------------------------
 
 # Remove repetitive data
 population = population[!(population$year>=2009 & population$rivest_adjustment == 'N'),] # Remove non-Rivest data for later years
@@ -118,10 +118,10 @@ season_population_summary_init = season_population %>%
   group_by(season) %>%
   mutate(population_total = sum(population_size))
 
-######################################################################################################
-######################################################################################################
+################################################################################
+################################################################################
 
-# 3. WEIGHT ODs BY POPULATION SIZE ----------------------------------------------------------------------------
+# 3. WEIGHT ODs BY POPULATION SIZE ---------------------------------------------
 
 # - For each season-year, multiply the OD raster by the population in that year
 # - Then, divide this raster by the total population, summed across all years
@@ -131,7 +131,7 @@ season_population_summary_init = season_population %>%
 
 for(ds_type in ds_types){ # START DATASET TYPE LOOP
 
-  # 3.1 Read in and subset data ----------------------------------------------------------------------------
+  # 3.1 Read in and subset data ------------------------------------------------
   
   if(ds_type == 'vhf'){
     
@@ -157,7 +157,7 @@ for(ds_type in ds_types){ # START DATASET TYPE LOOP
     
   }
   
-  # 3.2 Initialize tibble and lists to store weighted ODs ----------------------------------------------------------------------------
+  # 3.2 Initialize tibble and lists to store weighted ODs ----------------------
   
   ods_xyrpop = tibble(
     year = 1:length(ods),
@@ -165,9 +165,9 @@ for(ds_type in ds_types){ # START DATASET TYPE LOOP
     od_xyrpop = list(ods[[1]])
   )
   
-  ods_weighted <- list()
+  ods_weighted = list()
   
-  # 3.3 Multiply ODs by annual population size ----------------------------------------------------------------------------
+  # 3.3 Multiply ODs by annual population size ---------------------------------
   
   for (i in seq_along(ods)){
     
@@ -194,7 +194,7 @@ for(ds_type in ds_types){ # START DATASET TYPE LOOP
     
   }
   
-  # 3.4 Divide ODs by total seasonal population size ----------------------------------------------------------------------------
+  # 3.4 Divide ODs by total seasonal population size ---------------------------
   
   # Get list of seasons
   seasons = unique(season_population_summary$season)
@@ -213,7 +213,7 @@ for(ds_type in ds_types){ # START DATASET TYPE LOOP
     # Average ODs
     # Divide by total seasonal population size
     # Normalize to [0, 1]
-    ods_weighted[[i]] <- ods_xyrpop$od_xyrpop[ods_xyrpop$season == seasons[i]] %>% 
+    ods_weighted[[i]] = ods_xyrpop$od_xyrpop[ods_xyrpop$season == seasons[i]] %>% 
       terra::src(.) %>%
       terra::mosaic(fun = "mean") %>%
       `/`(total_pop) %>%
@@ -221,7 +221,7 @@ for(ds_type in ds_types){ # START DATASET TYPE LOOP
     
   }
   
-  # 3.5 Finalize population weighted ODs ----------------------------------------------------------------------------
+  # 3.5 Finalize population weighted ODs ---------------------------------------
   
   # Calculate 'overall' season population weighted OD
   # Get all population weighted ODs and stack
@@ -234,10 +234,10 @@ for(ds_type in ds_types){ # START DATASET TYPE LOOP
   
   ods_all = c(ods_weighted, od_overall)
   
-  ######################################################################################################
-  ######################################################################################################
+  ##############################################################################
+  ##############################################################################
   
-  # 4. SAVE ----------------------------------------------------------------------------
+  # 4. SAVE --------------------------------------------------------------------
   
   for(i in seq_along(ods_all)){
     

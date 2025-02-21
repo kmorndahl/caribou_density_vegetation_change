@@ -1,5 +1,5 @@
-######################################################################################################
-######################################################################################################
+################################################################################
+################################################################################
 
 # CODE DESCRIPTION
 
@@ -29,8 +29,8 @@
 #   - Resolution: all available data
 #   - Cohort: all cohorts
 
-######################################################################################################
-######################################################################################################
+################################################################################
+################################################################################
 
 # SET OUTPUT DIRECTORY
 
@@ -39,12 +39,12 @@ inPath = 'data/collar_data/'
 outPathIso = 'data/range_data/isopleths/season_year/0_orig/'
 outPathOD = 'data/range_data/ods/season_year/0_orig/'
 
-######################################################################################################
-######################################################################################################
+################################################################################
+################################################################################
 
-# 1. SET UP ----------------------------------------------------------------------------
+# 1. SET UP --------------------------------------------------------------------
 
-# 1.1 Set parameters ----------------------------------------------------------------------------
+# 1.1 Set parameters -----------------------------------------------------------
 
 # To run all seasons at once, specify 'all'
 # Otherwise, specify season which when run on HPC allows seasons to be run in parallel to reduce compute time
@@ -53,7 +53,7 @@ current_season = 'all'
 h_method = amt::hr_kde_ref # Bandwidth calculation method
 t_rast_res = 3000 # Template raster resolution
 
-# 1.2 Packages ----------------------------------------------------------------------------
+# 1.2 Packages -----------------------------------------------------------------
 
 # All packages except 'terra' were installed from CRAN using install.packages()
 # 'terra' development version was installed using remotes::install_github("rspatial/terra")
@@ -73,7 +73,7 @@ require(sf)
 nest = nest_legacy
 unnest = unnest_legacy
 
-# 1.3 Functions ----------------------------------------------------------------------------
+# 1.3 Functions ----------------------------------------------------------------
 
 # Function to retrieve bandwidth calculation
 # Output from hr_kde_lscv is a named list rather that a vector, we need to select just the $h slot
@@ -86,19 +86,19 @@ h_calc = function(trk){
 }
 
 # Functions to normalize raster between 0 and 1
-norm_raster <- function (x) {(x-x@data@min)/(x@data@max-x@data@min)}
-norm_terra <- function (x) {(x-minmax(x)[1])/(minmax(x)[2]-minmax(x)[1])}
+norm_raster = function (x) {(x-x@data@min)/(x@data@max-x@data@min)}
+norm_terra = function (x) {(x-minmax(x)[1])/(minmax(x)[2]-minmax(x)[1])}
 
-# 1.4 Load GPS collar data ----------------------------------------------------------------------------
+# 1.4 Load GPS collar data -----------------------------------------------------
 
 fmch_raw = readRDS(paste0(inPath, 'fmch_trk.rds'))
 
-######################################################################################################
-######################################################################################################
+################################################################################
+################################################################################
 
-# 2. PREPARE DATA ----------------------------------------------------------------------------
+# 2. PREPARE DATA --------------------------------------------------------------
 
-# 2.1 Prepare CRS ----------------------------------------------------------------------------
+# 2.1 Prepare CRS --------------------------------------------------------------
 
 # Work around to creating a CRS that works with the older version of amt
 # Get CRS from .rds file -- ABoVE CRS, ESRI:102001
@@ -112,7 +112,7 @@ print('The track created with appropriate CRS:')
 print(fmch_trk)
 cat('\n')
 
-# 2.2 Prepare template raster ----------------------------------------------------------------------------
+# 2.2 Prepare template raster --------------------------------------------------
 
 #' Make a single template raster for creating occurrence distributions so they can easily
 #' be merged together later. Choose whatever spatial resolution you want. The factor argument 
@@ -128,12 +128,12 @@ print('Template raster created:')
 print(t_rast)
 cat('\n')
 
-######################################################################################################
-######################################################################################################
+################################################################################
+################################################################################
 
-# 3. CALCULATE SEASONAL ISOPLETHS AND KDEs ----------------------------------------------------------------------------
+# 3. CALCULATE SEASONAL ISOPLETHS AND KDEs -------------------------------------
 
-# 3.1 Prepare collar data ----------------------------------------------------------------------------
+# 3.1 Prepare collar data ------------------------------------------------------
 
 #' Walk-through of the following code:
 #' 1. Adds 'year' column and makes anything before December 1 the next year
@@ -198,7 +198,7 @@ if(current_season != 'all'){
   season_year_trk_df = season_year_trk_df[season_year_trk_df$season == current_season,]
 }
 
-# 3.2 Create isopleths and KDEs ----------------------------------------------------------------------------
+# 3.2 Create isopleths and KDEs ------------------------------------------------
 
 #' Walk-through of the following code...
 #' Data is nested at the season-year level, so for each season-year:
@@ -227,12 +227,12 @@ print('Annual, seasonal isopleths and occurrence distributions created:')
 print(season_year_iso_od)
 cat('\n')
 
-######################################################################################################
-######################################################################################################
+################################################################################
+################################################################################
 
-# 4. SAVE SEASON-YEAR DATA ----------------------------------------------------------------------------
+# 4. SAVE SEASON-YEAR DATA -----------------------------------------------------
 
-# 4.1 Prepare season-year metadata ----------------------------------------------------------------------------
+# 4.1 Prepare season-year metadata ---------------------------------------------
 
 # Get list of season-year combinations
 season_years = levels(season_year_iso_od$season_year)
@@ -241,7 +241,7 @@ print('The season/years are:')
 print(season_years)
 cat('\n')
 
-# 4.2 Isopleths ----------------------------------------------------------------------------
+# 4.2 Isopleths ----------------------------------------------------------------
 
 #' Walk-through of the following code...
 #' For each season-year:
@@ -262,13 +262,13 @@ for (i in seq_along(season_years)){
 print('Annual, seasonal isopleths created and saved')
 cat('\n')
 
-# 4.3 ODs ----------------------------------------------------------------------------
+# 4.3 ODs ----------------------------------------------------------------------
 
 # Create list of ODs
-od_list <- list()
+od_list = list()
 for (i in seq_along(season_years)){
-  od_list[[i]] <- season_year_iso_od[season_year_iso_od$season_year == season_years[i],]$od_norm[[1]]
-  names(od_list[[i]]) <- paste0("od_gps_", season_years[i])
+  od_list[[i]] = season_year_iso_od[season_year_iso_od$season_year == season_years[i],]$od_norm[[1]]
+  names(od_list[[i]]) = paste0("od_gps_", season_years[i])
 }
 
 print('Annual, seasonal occurrence distributions aggregated:')

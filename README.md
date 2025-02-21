@@ -6,7 +6,7 @@ Rapid climate warming has contributed to significant changes in Arctic and borea
 
 ### Project correspondence:
 
-Kathleen M. Orndahl 
+Kathleen M. Orndahl
 kathleen.orndahl@nau.edu
 
 ## Repository summary
@@ -30,12 +30,13 @@ Specific information on data characteristics to included in potential requests a
 Scripts are prepended with numbers for organization, see details below for script groupings and code type (in parentheses):
 
 1. Process caribou collar data to produce annual, seasonal isopleths and occurrence distributions (R)
-2. Tidy annual, seasonal isopleth data (R)
+2. Aggregate and tidy annual, seasonal isopleth data (R)
 3. Process annual, seasonal occurrence distribution data to produce derivative products (R)
-4. Summarize isopleths by season (R)
+4. Summarize isopleths by season and calculate overlap with 'Core Uplands' (R)
 5. Calculate vegetation change within caribou spatial density levels (Google Earth Engine)
 6. Calculate background rates of vegetation change (Google Earth Engine)
 7. Create time series of relevant climate variables (R)
-8. Create figures (R)
+8. Analyze distribution of environmental variables across caribou spatial density classes (oogle Earth Engine and R)
+9. Create figures (R)
 
 

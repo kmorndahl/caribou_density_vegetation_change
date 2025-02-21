@@ -1,0 +1,329 @@
+// =====================================================================
+
+// CODE DESCRIPTION
+
+// This script extracts samples of environmental predictor data across caribou density classes
+// Used to create density distributions and compare environmental characteristics across caribou density classes
+
+// CODE AUTHOR: Kathleen Orndahl
+// CONTACT: kathleen.orndahl@nau.edu
+
+// Link to GEE snapshot: https://code.earthengine.google.com/abb7b07dec1b40f24b40cc1cdbc33bec
+
+// =====================================================================
+
+// ====================
+// 1. SET UP ==========
+// ====================
+ 
+// 1.1 LOAD DATA ==========
+
+// Specify variable
+var variable_name = 'tri';
+
+// Specify sample percent
+var perc = 10;
+var prop = ee.Number(perc).divide(100); 
+
+// Load ROI
+var ssf_outline = ee.FeatureCollection("users/kmo265/Caribou/ssf_outline");
+
+// Load external functions
+var fxns = require('users/kmo265/functions:functions');
+var temporalSegmentation = require('users/wiell/temporalSegmentation:temporalSegmentation'); // Load temporal segmentation module
+
+if(variable_name == 'soil'){
+  var variable = ee.Image("projects/soilgrids-isric/nitrogen_mean").divide(100);
+}else{
+  var variable = ee.Image("users/kmo265/Caribou/ssf_predictors/" + variable_name).rename(variable_name);
+}
+print('The variable is:', variable);
+
+// 1.2 SET PARAMETERS ==========
+
+// Caribou density parameters
+var start_year = 1992;
+var end_year = 2020;
+
+// Land cover parameters
+var year_range = start_year + '_' + end_year;
+var lcYear = start_year;
+ 
+// =======================================
+// 2. CREATE GROUPING VARIABLES ==========
+// =======================================
+
+// 2.1 BINNED CARIBOU SPATIAL DENSITY ==========
+
+// NOTE: occurrence distrubution is NAD83 / Yukon Albers (EPSG:3578)
+// This is not a CRS known to GEE, so it shows up as an 'unknown' projection
+
+var od_seasonal_bin3_0_01 = ee.ImageCollection("users/kmo265/Caribou/od_seasonal_all_bin3_ei_0_01_weighted"),
+
+// Tidy metadata
+od_seasonal_bin3_0_01 = ee.ImageCollection(od_seasonal_bin3_0_01.map(function(img){
+  var season = ee.String(img.id().split('_').slice(2, 3).get(0));
+  return img.set('season', season).rename('density');
+}));
+
+print('The seasonal binned caribou spatial density collection is', od_seasonal_bin3_0_01);
+
+// ==========================
+// 3. CREATE MASKS ==========
+// ==========================
+
+// 3.1 FIRE ==========
+
+// Load data
+var fires_CA = ee.FeatureCollection("users/kmo265/Fires/Full_Database/fires_Canada_clean");
+var fires_US = ee.FeatureCollection("users/kmo265/Fires/Full_Database/fires_AK_clean");
+
+// Combine collections
+var fires_all = fires_US.merge(fires_CA);
+
+// Create mask
+var fires_img_all = fires_all.reduceToImage(['ACRES'], ee.Reducer.mean()); // Convert to image
+var fires_mask_all = fires_img_all.unmask().not(); // Create mask
+
+// 3.2 PHENOLOGY ==========
+
+// Get snow DOY
+var snowDoysCcdcNdsi = ee.Image('projects/foreststructure/ABoVE/CCDC/CCDC_ABoVE_L4578SR_1984_2020_NDSI_SnowDoys_v20201116_forCCDC');
+var lastSnowDoy_NDSI_p1 = snowDoysCcdcNdsi.select(['lastSnowDoy_NDSI_p1']);
+var lastSnowDoy_NDSI_p4 = snowDoysCcdcNdsi.select(['lastSnowDoy_NDSI_p4']);
+var firstSnowDoy_NDSI_p1 = snowDoysCcdcNdsi.select(['firstSnowDoy_NDSI_p1']);
+var firstSnowDoy_NDSI_p4 = snowDoysCcdcNdsi.select(['firstSnowDoy_NDSI_p4']);
+
+// Calculate phenology metrics
+// NOTE: phenology metrics are based on the reference year 2018 and are NOT calcualted per year (i.e. they are constant)
+var lastSnowDoy = lastSnowDoy_NDSI_p1.rename('phenology_lastSnowDoy'),
+    firstSnowDoy = firstSnowDoy_NDSI_p1.rename('phenology_firstSnowDoy'),
+    snowFreeLength = firstSnowDoy.subtract(lastSnowDoy).rename('phenology_snowFreeDays');
+var phenologyMetrics = lastSnowDoy.addBands(firstSnowDoy).addBands(snowFreeLength);
+
+// Create phenology mask - only keep pixels with > 1 snow-free day
+// Masks out water, snow, ice
+var phenology_mask = phenologyMetrics.select('phenology_snowFreeDays').gt(1);
+phenologyMetrics = phenologyMetrics.updateMask(phenology_mask);
+
+// 3.3 LAND COVER ==========
+
+// Load land cover data
+var above_lc = ee.Image('projects/foreststructure/ABoVE/ORNL_DAAC/ABoVE_LandCover_v01'),
+    above_lc_palette = [
+      "#003300", //01: Evergreen Forest
+      "#00dd00", //02: Deciduous Forest
+      "#008800", //03: Mixed Forest
+      "#79843b", //04: Woodland
+      "#694704", //05: Low Shrub
+      "#ad3714", //06: Tall Shrub
+      "#afa377", //07: Open Shrubs
+      "#eac856", //08: Herbaceous
+      "#a38d1e", //09: Tussock Tundra
+      "#dfe5a2", //10: Sparsely Vegetated
+      "#57da92", //11: Fen
+      "#d18523", //12: Bog
+      "#15bbe9", //13: Shallows/littoral
+      "#666666", //14: Barren
+      "#96b1d4"  //15: Water
+    ],
+    above_lc_viz = {min:1, max:15, palette: above_lc_palette};
+
+// Get appropriate land cover year for analysis
+var lc_year = ee.Algorithms.If(ee.Number(lcYear).gt(2014), 2014, lcYear); // Land cover only goes until 2014, if selected year is later than that, default to the latest available year, 2014
+var prefix = ee.String('y');
+var lc_year_str = prefix.cat(ee.Number(lc_year).format('%.0f'));
+var lc = ee.Image(above_lc.select([lc_year_str]));
+
+// Load water data
+var water_jrc = ee.Image("JRC/GSW1_3/GlobalSurfaceWater");
+
+// Create barrens mask
+var barren_mask = lc.neq(14); // Only keep pixels where land cover is not barren
+
+// Create water mask
+var water_mask = water_jrc.select('occurrence').unmask(0).lte(50); // Only keep pixels where water occurrence is <= 50%
+
+// 3.4 LAND COVER CHANGE ==========
+
+// Load data
+var forest_change = ee.Image("UMD/hansen/global_forest_change_2021_v1_9");
+
+// Get land cover start and end year
+var lc_start_year = ee.Algorithms.If(ee.Number(start_year).gt(2014), 2014, start_year); // Land cover only goes until 2014, if current year is later than that, default to the latest available year, 2014
+var lc_end_year = ee.Algorithms.If(ee.Number(end_year).gt(2014), 2014, end_year); // Land cover only goes until 2014, if current year is later than that, default to the latest available year, 2014
+var prefix = ee.String('y');
+var start_str = prefix.cat(ee.Number(lc_start_year).format('%.0f'));
+var end_str = prefix.cat(ee.Number(lc_end_year).format('%.0f'));
+var lc_start = ee.Image(above_lc.select([start_str]));
+var lc_end = ee.Image(above_lc.select([end_str]));
+var lc_start_end = lc_start.addBands(lc_end);
+
+// Get tree cover start and end year
+var hansen_start_year = ee.Number(2000).subtract(2000); //Subtract 2000 to get correct values 
+var hansen_end_year = ee.Number(end_year).subtract(2000); // Subtract 2000 to get correct values 
+
+// Create forest loss mask
+var lc_forest_loss = lc_start_end.select(start_str).lte(4).and(lc_start_end.select(end_str).gt(4)).not(); // From Wang land cover layer
+var hansen_forest_loss = forest_change.select('lossyear')
+                            .updateMask(forest_change.select('lossyear').lte(hansen_end_year)) // Only loss years less than or equal to the end of the study period
+                            .updateMask(forest_change.select('lossyear').gt(hansen_start_year)) // Only loss years greater than the start of the study period
+                            .unmask() // Convert to binary ones and zeros
+                            .eq(0); // Reverse so areas of forest loss are zeros
+var forest_loss_mask = lc_forest_loss.multiply(hansen_forest_loss); // Combine Wang land cover and Hansen forest cover masks
+
+// Create water change mask
+// JRC water product has a 'transition' band which tracks water changes from the beginning (1984) to the end (2021) of the time series
+// Only keep areas that did not have a change in water occurrence: 'No Change', 'Permanent', 'Seasonal', 'Ephemeral permanent', 'Ephemeral seasonal'
+var water_change_mask = water_jrc.select('transition').eq(0)
+                               .or(water_jrc.select('transition').eq(1))
+                               .or(water_jrc.select('transition').eq(4))
+                               .or(water_jrc.select('transition').eq(9))
+                               .or(water_jrc.select('transition').eq(10))
+                               .unmask(1); // Masked areas are not water, unmask to 1 so these are kept when applying the mask
+
+// 3.5 CARIBOU STEP SELECTION FUNCTIONS (SSF) ==========
+
+// Load data
+var ssf_seasonal = ee.ImageCollection("users/kmo265/Caribou/fmch_ssf_seasonal");
+
+// Add season, rename band
+ssf_seasonal = ee.ImageCollection(ssf_seasonal.map(function(img){
+  var season = img.id().split('_').slice(0, -3).join('');
+  return img.set('season', season).rename('selection_prob');
+}));
+
+// Calculate overall SSF
+var ssf_overall = ssf_seasonal.mean().round();
+
+// Add overall SSF to seasonal SSF collection
+ssf_seasonal = ee.ImageCollection(ssf_seasonal.toList(10).add(ssf_overall.set('season', 'overall')));
+
+// 3.6 REPORT AREA MASKED ==========
+
+// Calculate total area masked over the study area
+var water_mask_area = water_mask.eq(0).selfMask().multiply(ee.Image.pixelArea()).reduceRegion({reducer: ee.Reducer.sum().unweighted(), geometry: ssf_outline.geometry(), scale: 30, maxPixels: 1e13});
+var phenology_mask_area = phenology_mask.eq(0).selfMask().multiply(ee.Image.pixelArea()).reduceRegion({reducer: ee.Reducer.sum().unweighted(), geometry: ssf_outline.geometry(), scale: 30, maxPixels: 1e13});
+var fires_mask_all_area = fires_mask_all.eq(0).selfMask().multiply(ee.Image.pixelArea()).reduceRegion({reducer: ee.Reducer.sum().unweighted(), geometry: ssf_outline.geometry(), scale: 30, maxPixels: 1e13});
+var forest_loss_mask_area = forest_loss_mask.eq(0).selfMask().multiply(ee.Image.pixelArea()).reduceRegion({reducer: ee.Reducer.sum().unweighted(), geometry: ssf_outline.geometry(), scale: 30, maxPixels: 1e13});
+var water_change_mask_area = water_change_mask.eq(0).selfMask().multiply(ee.Image.pixelArea()).reduceRegion({reducer: ee.Reducer.sum().unweighted(), geometry: ssf_outline.geometry(), scale: 30, maxPixels: 1e13});
+print('Water mask area:', water_mask_area);
+print('Phenology mask area:', phenology_mask_area);
+print('Fire mask area:', fires_mask_all_area);
+print('Forest loss mask area:', forest_loss_mask_area);
+print('Water change mask area:', water_change_mask_area);
+
+// ====================
+// 4. ANALYZE =========
+// ====================
+
+// 4.0 MASK ==========
+
+// Mask variable
+variable = variable.updateMask(water_mask); // Mask out water
+variable = variable.updateMask(phenology_mask); // Mask out based on snow-free days
+variable = variable.updateMask(fires_mask_all); // Mask out fires
+variable = variable.updateMask(forest_loss_mask); // Mask out fires
+variable = variable.updateMask(water_change_mask); // Mask out fires
+print('The variable is', variable);
+
+// Mask binned ODs
+od_seasonal_bin3_0_01 = od_seasonal_bin3_0_01.map(function(img){return img.unmask({sameFootprint: false}).rename(['density'])}); // Expand
+od_seasonal_bin3_0_01 = od_seasonal_bin3_0_01.map(function(img){return img.updateMask(water_mask)}); // Mask out water
+od_seasonal_bin3_0_01 = od_seasonal_bin3_0_01.map(function(img){return img.updateMask(phenology_mask)}); // Mask out based on snow-free days
+od_seasonal_bin3_0_01 = od_seasonal_bin3_0_01.map(function(img){return img.updateMask(fires_mask_all)}); // Mask out fires
+od_seasonal_bin3_0_01 = od_seasonal_bin3_0_01.map(function(img){return img.updateMask(forest_loss_mask)}); // Mask out fires
+od_seasonal_bin3_0_01 = od_seasonal_bin3_0_01.map(function(img){return img.updateMask(water_change_mask)}); // Mask out fires
+print('The binned occurrence density collection is', od_seasonal_bin3_0_01);
+
+// Mask SSFs
+ssf_seasonal = ssf_seasonal.map(function(img){return img.updateMask(water_mask)}); // Mask out water
+ssf_seasonal = ssf_seasonal.map(function(img){return img.updateMask(phenology_mask)}); // Mask out based on snow-free days
+ssf_seasonal = ssf_seasonal.map(function(img){return img.updateMask(fires_mask_all)}); // Mask out fires
+ssf_seasonal = ssf_seasonal.map(function(img){return img.updateMask(forest_loss_mask)}); // Mask out fires
+ssf_seasonal = ssf_seasonal.map(function(img){return img.updateMask(water_change_mask)}); // Mask out fires
+print('The step selection function collection is', ssf_seasonal);
+
+// 4.1 PREPARE METADATA ==========
+
+// List of caribou density values
+var density_classes = ee.List.sequence(1, 4, 1);
+
+// Set parameters
+var ssf_prob = 8;
+var res = variable.projection().nominalScale();
+var combinations = density_classes; // Choose combinations for density & LC, choose density_classes for just density
+print('List to loop through', combinations);
+print('SSF threshold', ssf_prob);
+print('Output resolution', res);
+
+var scale_name = ee.Number(res).format('%.0f').getInfo();
+var ssf_cutoff_name = ee.Number(ssf_prob).format('%.0f').getInfo();
+
+// 4.2 LOOP SEASONS ==========
+
+var season_list = ['autumn', 'calving', 'overall', 'postcalving', 'precalving', 'rut', 'summer', 'winter'];
+
+var loop_seasons = function(season_name){
+
+  // Get season
+  print('Season', season_name);
+  
+  // Get seasonal OD and SSF
+  var od_season_binned = od_seasonal_bin3_0_01.filter(ee.Filter.eq('season', season_name)).first();
+  print('Binned occurrence distribution, season', od_season_binned);
+  var ssf_season = ssf_seasonal.filter(ee.Filter.eq('season', season_name)).first();
+  print('Step selection function, season', ssf_season);
+  
+  // Filter by SSF probability
+  var ssf_prob_mask = ssf_season.gte(ssf_prob).selfMask();
+  var od_season_binned_ssf = od_season_binned.updateMask(ssf_prob_mask);
+  var variable_season_ssf = variable.updateMask(ssf_prob_mask);
+  
+  // 4.3 SAMPLE PIXELS ==========
+  
+  // Function to reduce over PFT slope image
+  var sample_pixels = function(combo){
+
+    // Get current identifier
+    var dens_id = ee.Number(combo);
+
+    // Get caribou density masks
+    var dens_mask = od_season_binned_ssf.eq(dens_id); // Includes fire, water, SSF etc. masks
+
+    // Mask variable
+    var variable_masked = variable_season_ssf.updateMask(dens_mask);
+    
+    // Sample pixels
+    var sample_fc = variable_masked.sample({
+        region: ssf_outline.geometry(),
+        scale: res,
+        factor: prop,
+        tileScale: 16,
+        seed: 65});
+
+    var sample_fc_tidy = sample_fc.map(function(feat){return feat.set('caribou_density', dens_id)
+                                                                 .set('season', season_name);
+    });
+  
+    return sample_fc_tidy;
+  
+  };
+  
+  // Map to calcuate area
+  var variable_all = ee.FeatureCollection(combinations.map(sample_pixels)).flatten();
+  print('Reducer, first feature', variable_all.first());
+  
+  // Export to drive
+  Export.table.toDrive({
+    collection: variable_all.select(['.*'], null, false), // Remove geometry
+    description: 'density_' + variable_name + '_distribution' + perc + '_' + season_name,
+    folder: 'density_' + variable_name
+  });
+
+};
+
+season_list.map(loop_seasons);
+
+throw('stop')
+
