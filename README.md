@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/840049730.svg)](https://doi.org/10.5281/zenodo.13774447)
+
 # Caribou density and vegetation change
 
 ## Project summary
