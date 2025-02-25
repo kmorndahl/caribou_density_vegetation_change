@@ -72,7 +72,7 @@ for(var in vars){
   df = bind_rows(calving, postcalving, summer, winter, overall)
   
   # Tidy
-  df = subset(df, select = -c(.geo, system.index))
+  df = dplyr::select(df, -any_of(c('system.index', '.geo')))
   df = na.omit(df)
   names(df) = gsub('[.]', '_', names(df))
   

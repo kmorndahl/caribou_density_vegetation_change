@@ -70,7 +70,7 @@ overall = read.csv(paste0(inPath, 'categorical_change_overall.csv'))
 overall$allEvShrub_count_neg2 = 0
 
 categorical_change = rbind(autumn, calving, postcalving, precalving, rut, summer, winter, overall)
-categorical_change = dplyr::select(categorical_change, -c(system.index, .geo))
+categorical_change = dplyr::select(categorical_change, -any_of(c('system.index', '.geo')))
 
 # 2.2 Format data -----------------------------------------------------------------
 

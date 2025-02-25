@@ -72,7 +72,7 @@ overall = read.csv(paste0(inPath, 'weighted_area_annual_overall.csv'))
 # 2.1 Combine data -------------------------------------------------------------
 
 cover_density = rbind(autumn, calving, postcalving, precalving, rut, summer, winter, overall)
-cover_density = dplyr::select(cover_density, -c(system.index, .geo))
+cover_density = dplyr::select(cover_density, -any_of(c('system.index', '.geo')))
 cover_density = dplyr::select(cover_density, -contains("_count"))
 
 # 2.2 Format data --------------------------------------------------------------

@@ -71,7 +71,7 @@ overall = read.csv(paste0(inPath, 'sens_slopes_overall.csv'))
 # 2.1 Combine data -----------------------------------------------------------------
 
 slope = rbind(autumn, calving, postcalving, precalving, rut, summer, winter, overall)
-slope = dplyr::select(slope, -c(system.index, .geo))
+slope = dplyr::select(slope, -any_of(c('system.index', '.geo')))
 
 # 2.2 Format data -----------------------------------------------------------------
 

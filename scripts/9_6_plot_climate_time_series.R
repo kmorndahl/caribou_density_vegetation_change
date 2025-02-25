@@ -46,7 +46,7 @@ climate = read.csv(paste0(inPath, 'climate_time_series.csv'))
 # 2. TIDY ----------------------------------------------------------------------
 
 # Remove unnecessary columns
-climate = dplyr::select(climate, -c(system.index, FiveYrBlck, One, WinterYr, .geo, season))
+climate = dplyr::select(climate, -any_of(c('system.index', '.geo', 'FiveYrBlck', 'One', 'WinterYr', 'season')))
 
 # Scale climate variables
 climate[,grepl("aet", colnames(climate))] = climate[,grepl("aet", colnames(climate))]*0.1

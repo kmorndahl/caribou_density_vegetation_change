@@ -474,8 +474,9 @@ var loop_seasons = function(season_name){
   // Export to drive
   Export.table.toDrive({
     collection: pft_masked_all,
-    description: year_range + '_lc_density_categorical_change_' + season_name,
-    folder: year_range + '_bin3_ei_0_01_weighted_od_' + scale_name + 'm_ssf' + ssf_cutoff_name + '_categorical_change',
+    description: 'categorical_change_' + season_name,
+    folder: 'categorical_change',
+    selectors: 'LC, allDecShrub_count_0, allDecShrub_count_1, allDecShrub_count_2, allDecShrub_count_neg1, allDecShrub_count_neg2, allEvShrub_count_0, allEvShrub_count_1, allEvShrub_count_2, allEvShrub_count_neg1, allEvShrub_count_neg2, allForb_count_0, allForb_count_1, allForb_count_2, allForb_count_neg1, allForb_count_neg2, alnshr_count_0, alnshr_count_1, alnshr_count_2, alnshr_count_neg1, alnshr_count_neg2, betshr_count_0, betshr_count_1, betshr_count_2, betshr_count_neg1, betshr_count_neg2, caribou_density, graminoid_count_0, graminoid_count_1, graminoid_count_2, graminoid_count_neg1, graminoid_count_neg2, salshr_count_0, salshr_count_1, salshr_count_2, salshr_count_neg1, salshr_count_neg2, season, tmlichen_count_0, tmlichen_count_1, tmlichen_count_2, tmlichen_count_neg1, tmlichen_count_neg2'
   });
 
 };

@@ -36,7 +36,7 @@ df = read.csv(paste0(inPath, 'pft_change_background.csv'))
 # 2. TIDY ----------------------------------------------------------------------
 
 # Remove unnecesary columns and NAs
-df = subset(df, select = -c(.geo, system.index))
+df = dplyr::select(df, -any_of(c('system.index', '.geo')))
 df = na.omit(df)
 
 # Format data

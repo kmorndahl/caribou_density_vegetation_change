@@ -117,15 +117,11 @@ var pft_weighted_area_dict = pft_weighted_area_final.reduceRegions({
 pft_weighted_area_dict = ee.FeatureCollection(pft_weighted_area_dict).map(function(feat){return feat.setGeometry(null)});
 print('PFT weighted area across test regions', pft_weighted_area_dict);
 
-// Get properties
-var properties = pft_weighted_area_dict.propertyNames();
-properties = properties.removeAll(['.geo', 'system.index']).getInfo();
-
 // 4.3 EXPORT ==========
 
 Export.table.toDrive({
   collection: pft_weighted_area_dict, 
   description: 'pft_change_background', 
-  folder: 'pft_change_background',
-  selectors: properties
+  folder: 'weighted_area'
+  selectors: 'allDecShrub_1992_cover, allDecShrub_2020_cover, allEvShrub_1992_cover, allEvShrub_2020_cover, allForb_1992_cover, allForb_2020_cover, alnshr_1992_cover, alnshr_2020_cover, area, betshr_1992_cover, betshr_2020_cover, graminoid_1992_cover, graminoid_2020_cover, name, salshr_1992_cover, salshr_2020_cover, tmlichen_1992_cover, tmlichen_2020_cover'
 });

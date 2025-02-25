@@ -158,6 +158,7 @@ print('Yearly climate averages', climate_avgs);
 Export.table.toDrive({
   collection: climate_avgs.select(['.*'],null,false), // Don't export geometry
   description: 'climate_time_series',
-  folder: 'climate_time_series',
+  folder: 'climate_data',
+  selectors: 'range, aet_sum_count, aet_sum_mean, aet_sum_stdDev, def_sum_count, def_sum_mean, def_sum_stdDev, pdsi_mean_count, pdsi_mean_mean, pdsi_mean_stdDev, pet_sum_count, pet_sum_mean, pet_sum_stdDev, pr_sum_count, pr_sum_mean, pr_sum_stdDev, ro_sum_count, ro_sum_mean, ro_sum_stdDev, season, soil_mean_count, soil_mean_mean, soil_mean_stdDev, srad_mean_count, srad_mean_mean, srad_mean_stdDev, swe_sum_count, swe_sum_mean, swe_sum_stdDev, swi_count, swi_mean, swi_stdDev, tmavg_mean_count, tmavg_mean_mean, tmavg_mean_stdDev, tmavg_stdDev_count, tmavg_stdDev_mean, tmavg_stdDev_stdDev, tmmn_min_count, tmmn_min_mean, tmmn_min_stdDev, tmmx_max_count, tmmx_max_mean, tmmx_max_stdDev, vap_mean_count, vap_mean_mean, vap_mean_stdDev, vpd_mean_count, vpd_mean_mean, vpd_mean_stdDev, vs_mean_count, vs_mean_mean, vs_mean_stdDev, year'
 });
 

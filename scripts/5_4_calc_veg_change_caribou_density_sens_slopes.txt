@@ -350,8 +350,9 @@ var loop_seasons = function(season_name){
   // Export to drive
   Export.table.toDrive({
     collection: veg_all,
-    description: year_range + '_lc_density_slope_' + season_name,
-    folder: year_range + '_bin3_ei_0_01_weighted_od_' + scale_name + 'm_ssf' + ssf_cutoff_name + '_slope_EcoAppsTEST',
+    description: 'sens_slopes_' + season_name,
+    folder: 'sens_slopes',
+    selectors: 'LC, caribou_density, season, sens_slope_allDecShrub_count, sens_slope_allDecShrub_mean, sens_slope_allDecShrub_variance, sens_slope_allEvShrub_count, sens_slope_allEvShrub_mean, sens_slope_allEvShrub_variance, sens_slope_allForb_count, sens_slope_allForb_mean, sens_slope_allForb_variance, sens_slope_alnshr_count, sens_slope_alnshr_mean, sens_slope_alnshr_variance, sens_slope_betshr_count, sens_slope_betshr_mean, sens_slope_betshr_variance, sens_slope_graminoid_count, sens_slope_graminoid_mean, sens_slope_graminoid_variance, sens_slope_salshr_count, sens_slope_salshr_mean, sens_slope_salshr_variance, sens_slope_tmlichen_count, sens_slope_tmlichen_mean, sens_slope_tmlichen_variance'
   });
 
 };

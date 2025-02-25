@@ -19,7 +19,8 @@
 // 1.1 LOAD DATA ==========
 
 // Specify variable
-var variable_name = 'tri';
+var variable_name = 'soil';  // Choose 'eastness', 'elev', 'northness', 'snow', 'soil', 'tpi' or 'tri'
+var variable_list = ee.Algorithms.If(variable_name == 'soil', 'nitrogen_0-5cm_mean, nitrogen_100-200cm_mean, nitrogen_15-30cm_mean, nitrogen_30-60cm_mean, nitrogen_5-15cm_mean, nitrogen_60-100cm_mean', variable_name);
 
 // Specify sample percent
 var perc = 10;
@@ -318,7 +319,8 @@ var loop_seasons = function(season_name){
   Export.table.toDrive({
     collection: variable_all.select(['.*'], null, false), // Remove geometry
     description: 'density_' + variable_name + '_distribution' + perc + '_' + season_name,
-    folder: 'density_' + variable_name
+    folder: 'density_' + variable_name,
+    selectors: 'caribou_density, season, ' +  variable_list
   });
 
 };
